@@ -35,6 +35,7 @@
 #include "qemu/module.h"
 #include "desc.h"
 #include "qemu/timer.h"
+#include "hw/qdev-properties.h"
 
 /* Interface requests */
 #define WACOM_GET_REPORT	0x01
@@ -63,6 +64,7 @@ typedef struct USBWacomState {
     USBDevice dev;
     USBEndpoint *intr;
     QEMUPutMouseEntry *eh_entry;
+    USBDesc usb_desc_custom; /* If we customise product/vendor ids */
     int dx, dy, dz, buttons_state;
     int x, y;
     enum {
@@ -70,6 +72,7 @@ typedef struct USBWacomState {
         WACOM_MODE_WACOM = 2,
     } mode;
     uint8_t idle;
+    uint16_t product_id, vendor_id;
     int64_t lastPacketTime;
     bool changedPen;
 } USBWacomState;
@@ -294,7 +297,7 @@ static const USBDescDevice desc_device_wacom = {
     },
 };
 
-static const USBDesc desc_wacom = {
+static const USBDesc desc_wacom_default = {
     .id = {
         .idVendor          = 0x056a,
         .idProduct         = 0x00d4,
@@ -557,7 +560,7 @@ static void usb_wacom_handle_data(USBDevice *dev, USBPacket *p)
                 currentTime = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     
                 // Driver assumes pen has left if it doesn't get a ping every 1.5 seconds, so tickle it to keep it alive
-                if (currentTime - s->lastPacketTime > 100) {
+                if (s->eh_entry && currentTime - s->lastPacketTime > 100) {
                     s->changedPen = true;
                 }
                 
@@ -591,11 +594,26 @@ static void usb_wacom_unrealize(USBDevice *dev)
         qemu_remove_mouse_event_handler(s->eh_entry);
         s->eh_entry = 0;
     }
+    
+    dev->usb_desc = 0;
 }
 
 static void usb_wacom_realize(USBDevice *dev, Error **errp)
 {
     USBWacomState *s = USB_WACOM(dev);
+    
+    if (s->product_id != 0 || s->vendor_id != 0) {
+        // Make a copy of the USB descriptor so we can customise the product ID
+        memcpy((char*) &s->usb_desc_custom, (char*) &desc_wacom_default, sizeof(desc_wacom_default));
+        
+        s->usb_desc_custom.id.idProduct = s->product_id;
+        s->usb_desc_custom.id.idVendor = s->vendor_id;
+        
+        dev->usb_desc = &s->usb_desc_custom;
+    } else {
+        dev->usb_desc = &desc_wacom_default;
+    }
+    
     usb_desc_init(dev);
     s->dev.speed = USB_SPEED_FULL;
     s->intr = usb_ep_get(dev, USB_TOKEN_IN, 1);
@@ -610,21 +628,31 @@ static const VMStateDescription vmstate_usb_wacom = {
     .unmigratable = 1,
 };
 
+static Property bamboo_properties[] = {
+    DEFINE_PROP_UINT16("productid", struct USBWacomState, product_id, 0),
+    DEFINE_PROP_UINT16("vendorid", struct USBWacomState, vendor_id, 0),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
 static void usb_wacom_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);
 
     uc->product_desc   = TABLET_NAME_QEMU;
-    uc->usb_desc       = &desc_wacom;
+    uc->usb_desc       = &desc_wacom_default;
     uc->realize        = usb_wacom_realize;
     uc->handle_reset   = usb_wacom_handle_reset;
     uc->handle_control = usb_wacom_handle_control;
     uc->handle_data    = usb_wacom_handle_data;
     uc->unrealize      = usb_wacom_unrealize;
+    uc->handle_attach  = usb_desc_attach;
+
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
     dc->desc = TABLET_NAME_QEMU;
     dc->vmsd = &vmstate_usb_wacom;
+
+    device_class_set_props(dc, bamboo_properties);
 }
 
 static const TypeInfo wacom_info = {

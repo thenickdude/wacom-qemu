@@ -48,3 +48,8 @@ tablet device) until the guest's Wacom driver is loaded.
 
 (You can tell if you're using the proper Wacom device rather than the PS/2 fallback, because your scrollwheel will stop 
 functioning, since I didn't add support for it)
+
+You can override the vendorid and productid of the device like so (but the tablet may not provide the features that are 
+expected of it by the guest's drivers, and fail to operate):
+
+    qemu -device usb-wacom-tablet-bamboo,id=wacom,vendorid=0x056a,productid=0x0069
