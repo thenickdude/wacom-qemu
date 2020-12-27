@@ -67,6 +67,13 @@
 #define USB_DT_REPORT 0x22
 #define USB_DT_PHY    0x23
 
+#define PEN_LEAVE_TIMEOUT 5000
+#define PEN_PING_INTERVAL 200
+
+#define TABLET_CLICK_PRESSURE 890
+#define TABLET_POINTER_DOWN_MIN_PRESSURE 128
+#define TABLET_MAX_PRESSURE ((1 << 11) - 1)
+
 #define TABLET_RESOLUTION_X 44704
 #define TABLET_RESOLUTION_Y 27940
 
@@ -78,7 +85,7 @@ typedef struct USBWacomState {
     QEMUPutMouseEntry *eh_entry;
     USBDesc usb_desc_custom; /* If we customise product/vendor ids */
     int dx, dy, dz, buttons_state;
-    int x, y;
+    int x, y, pressure;
     enum {
         WACOM_MODE_HID = 1,
         WACOM_MODE_WACOM = 2,
@@ -86,6 +93,10 @@ typedef struct USBWacomState {
     uint8_t idle;
     uint16_t product_id, vendor_id;
     int64_t lastPacketTime;
+    
+    int64_t lastInputEventTime;
+    bool penInProx;
+    
     bool changedPen, changedProximity;
 } USBWacomState;
 
@@ -333,6 +344,16 @@ static const USBDesc desc_wacom_default = {
     .str  = desc_strings,
 };
 
+static inline int int_clamp(int val, int vmin, int vmax)
+{
+    if (val < vmin)
+        return vmin;
+    else if (val > vmax)
+        return vmax;
+    else
+        return val;
+}
+
 static void usb_wacom_event(void *opaque,
                             int x, int y, int dz, int buttons_state)
 {
@@ -342,19 +363,18 @@ static void usb_wacom_event(void *opaque,
     s->x = (x * TABLET_RESOLUTION_X / 0x7FFF);
     s->y = (y * TABLET_RESOLUTION_Y / 0x7FFF);
     s->dz += dz;
+    s->pressure = int_clamp(s->pressure - dz * 128, TABLET_POINTER_DOWN_MIN_PRESSURE, TABLET_MAX_PRESSURE);
     s->buttons_state = buttons_state;
+    
     s->changedPen = true;
+    s->lastInputEventTime = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    
+    if (!s->penInProx) {
+        s->penInProx = true;
+        s->changedProximity = true;
+    }
+    
     usb_wakeup(s->intr, 0);
-}
-
-static inline int int_clamp(int val, int vmin, int vmax)
-{
-    if (val < vmin)
-        return vmin;
-    else if (val > vmax)
-        return vmax;
-    else
-        return val;
 }
 
 #define WACOM_BUTTON_STYLUS_BUTTON_1 0x02
@@ -372,7 +392,7 @@ static int usb_wacom_poll(USBWacomState *s, uint8_t *buf, int len)
     int b;
     uint16_t pressure;
     uint8_t distance;
-    uint8_t tiltX = 64, tiltY = 64; // Tilt centered
+    uint8_t tiltX = 0 + 64, tiltY = 0 + 64; // Tilt centered
     
     if (len < 10)
         return 0;
@@ -386,7 +406,7 @@ static int usb_wacom_poll(USBWacomState *s, uint8_t *buf, int len)
         b |= WACOM_BUTTON_STYLUS_BUTTON_2;
 
     if ((s->buttons_state & MOUSE_EVENT_LBUTTON) != 0) {
-        pressure = 890;
+        pressure = s->pressure;
         distance = 0;
      } else {
         pressure = 0;
@@ -411,7 +431,7 @@ static int usb_wacom_poll(USBWacomState *s, uint8_t *buf, int len)
     return 10;
 }
 
-static int usb_wacom_in_prox_event(USBWacomState *s, uint8_t *buf, int len)
+static int usb_wacom_prox_event(USBWacomState *s, uint8_t *buf, int len, bool inProx)
 {
     uint8_t toolIndex = 0;
     uint32_t toolID = 0x802; /* Intuos4/5 13HD/24HD General Pen */
@@ -421,7 +441,7 @@ static int usb_wacom_in_prox_event(USBWacomState *s, uint8_t *buf, int len)
         return 0;
     
     buf[0] = WACOM_REPORT_PENABLED;
-    buf[1] = WACOM_STYLUS_PROXIMITY | WACOM_STYLUS_READY | WACOM_STYLUS_HAS_SERIAL | (toolIndex & 0x01);
+    buf[1] = WACOM_STYLUS_PROXIMITY | (inProx ? WACOM_STYLUS_READY | WACOM_STYLUS_HAS_SERIAL : 0) | (toolIndex & 0x01);
 
     buf[2] = toolID >> 4;
     buf[3] = (toolID << 4) | (toolSerial >> 28);
@@ -478,8 +498,9 @@ static void usb_wacom_set_tablet_mode(USBWacomState *s, int mode)
         qemu_activate_mouse_event_handler(s->eh_entry);
     }
 
-    // Resend all our state for the new mode
-    s->changedPen = true;
+    // Start off with pen out of prox until we get some cursor events
+    s->penInProx = false;
+    s->changedPen = false;
     s->changedProximity = true;
 }
 
@@ -614,7 +635,11 @@ static void usb_wacom_handle_control(USBDevice *dev, USBPacket *p,
                 p->actual_length = 2;
                 break;
             case WACOM_REQUEST_GET_FIRST_TOOL_ID:
-                p->actual_length = usb_wacom_in_prox_event(s, data, length);
+                if (s->penInProx) {
+                    p->actual_length = usb_wacom_prox_event(s, data, length, s->penInProx);
+                } else {
+                    p->actual_length = 0;
+                }
             break;
             case WACOM_REQUEST_GET_VERSIONS:
                 p->actual_length = usb_wacom_version_report(s, data, length);
@@ -637,7 +662,6 @@ static void usb_wacom_handle_control(USBDevice *dev, USBPacket *p,
         warn_report(TYPE_USB_WACOM ": Rejecting unsupported control request %x value %x index %x", request, value, index);
     fail:
         p->status = USB_RET_STALL;
-        break;
     }
 }
 
@@ -663,9 +687,20 @@ static void usb_wacom_handle_data(USBDevice *dev, USBPacket *p)
                 
                 currentTime = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
                 
+                // If we haven't moved the pen in the while, move it out of proximity
+                if (s->penInProx && !s->changedPen && currentTime - s->lastInputEventTime > PEN_LEAVE_TIMEOUT) {
+                    s->penInProx = false;
+                    s->changedProximity = true;
+                }
+                
                 // Driver assumes pen has left if it doesn't get a ping every 1.5 seconds, so tickle it to keep it alive
-                if (s->eh_entry && currentTime - s->lastPacketTime > 100) {
-                    s->changedPen = true;
+                if (currentTime - s->lastPacketTime > PEN_PING_INTERVAL) {
+                    if (s->penInProx) {
+                        s->changedPen = true;
+                    } else {
+                        // Driver also doesn't like it if we go totally quiet when pen is out of prox
+                        s->changedProximity = true;
+                    }
                 }
                 
                 if (!(s->changedPen || s->changedProximity)) {
@@ -677,7 +712,7 @@ static void usb_wacom_handle_data(USBDevice *dev, USBPacket *p)
 
                 if (s->changedProximity) {
                     s->changedProximity = false;
-                    len = usb_wacom_in_prox_event(s, buf, p->iov.size);
+                    len = usb_wacom_prox_event(s, buf, p->iov.size, s->penInProx);
                     usb_packet_copy(p, buf, len);
                 } else if (s->changedPen) {
                     s->changedPen = false;
@@ -729,7 +764,9 @@ static void usb_wacom_realize(USBDevice *dev, Error **errp)
     s->dev.speed = USB_SPEED_FULL;
     s->intr = usb_ep_get(dev, USB_TOKEN_IN, 3);
     s->eh_entry = 0;
+    s->pressure = TABLET_CLICK_PRESSURE;
     s->lastPacketTime = 0;
+    s->lastInputEventTime = 0;
     
     usb_wacom_set_tablet_mode(s, WACOM_MODE_HID);
 }

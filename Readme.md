@@ -53,3 +53,9 @@ You can override the vendorid and productid of the device like so (but the table
 expected of it by the guest's drivers, and fail to operate):
 
     qemu -device usb-wacom-tablet-bamboo,id=wacom,vendorid=0x056a,productid=0x0069
+
+When the cursor is idle for 3 seconds, the virtual tablet will simulate the pen leaving proximity, then it'll simulate 
+a re-enter the next time the cursor moves.
+
+Your scrollwheel controls the simulated pen pressure, but it seems like you can't change the pressure while the pen is 
+held down, maybe a QEMU quirk.
