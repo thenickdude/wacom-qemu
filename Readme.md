@@ -2,13 +2,13 @@
 
 These devices simulate the basic functionality of a Wacom Bamboo or Wacom Intuos 5 graphics tablet 
 in QEMU. I have built this as an alternative to the support that QEMU already has for simulating a Wacom "PenPartner" 
-tablet, because this tablet model is positively ancient and isn't well-supported by guest drivers any more.
+tablet, because this tablet model is positively ancient and isn't well-supported by guest drivers anymore.
 
 The goal of this project is to allow me to test out official Wacom drivers (macOS / Windows) for tablets that I don't
 actually own, for my [Wacom Driver Fix](https://github.com/thenickdude/wacom-driver-fix) project that fixes bugs in 
 Wacom's abandoned macOS drivers. 
 
-The Intuos 5 model emulates a Intuos 5 Touch Medium PTH-650 (but with no touch support). The Bamboo tablet is a Bamboo 
+The Intuos 5 model emulates an Intuos 5 Touch Medium PTH-650 (but with no touch support). The Bamboo tablet is a Bamboo 
 Pen CTL-460.
 
 The emulated devices work on Linux (with `input-wacom`), Windows 10 and macOS Catalina (both using Wacom's official drivers). 
@@ -18,19 +18,19 @@ There's probably nobody else in the world who will find this useful, but I'm pos
 ## Adding this to QEMU
 
 Add the two drivers `dev-wacom-bamboo.c` and `dev-wacom-intuos-5.c` into QEMU's sourcecode at `/hw/usb`, alongside the 
-`dev-wacom.c` driver that is already included with QEMU. Then edit `Makefile.objs` in that same directory to add the new 
+`dev-wacom.c` driver that is already included with QEMU. Then edit `meson.build` in that same directory to add the new 
 drivers to the list of object files:
 
 Before: 
 
-```Makefile
-common-obj-$(CONFIG_USB_TABLET_WACOM) += dev-wacom.o
+```
+softmmu_ss.add(when: 'CONFIG_USB_TABLET_WACOM', if_true: files('dev-wacom.c'))
 ```
 
 After:
 
 ```Makefile
-common-obj-$(CONFIG_USB_TABLET_WACOM) += dev-wacom.o dev-wacom-bamboo.o dev-wacom-intuos-5.o
+softmmu_ss.add(when: 'CONFIG_USB_TABLET_WACOM', if_true: files('dev-wacom.c', 'dev-wacom-bamboo.c', 'dev-wacom-intuos-5.c'))
 ```
 
 Then build QEMU from source.

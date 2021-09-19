@@ -34,6 +34,7 @@
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "desc.h"
+#include "qom/object.h"
 #include "qemu/timer.h"
 #include "hw/qdev-properties.h"
 
@@ -88,10 +89,10 @@ typedef struct USBWacomState {
     bool penInProx;
     
     bool changedPen, changedProximity;
-} USBWacomState;
+};
 
 #define TYPE_USB_WACOM "usb-wacom-tablet-bamboo"
-#define USB_WACOM(obj) OBJECT_CHECK(USBWacomState, (obj), TYPE_USB_WACOM)
+OBJECT_DECLARE_SIMPLE_TYPE(USBWacomState, USB_WACOM)
 
 enum {
     STR_MANUFACTURER = 1,
@@ -233,7 +234,86 @@ static const uint8_t interface_2_hid_report_descriptor[] = {
     0xC0               // End Collection
 };
 
+static const USBDescIface wacom_ifaces[] = {
+    {
+        .bInterfaceNumber              = 0,
+        .bNumEndpoints                 = 1,
+        .bInterfaceClass               = USB_CLASS_HID,
+        .bInterfaceSubClass            = 0x01, /* boot */
+        .bInterfaceProtocol            = 0x02, /* mouse */
+        .ndesc                         = 1,
+        .descs = (USBDescOther[]) {
+            {
+                /* HID descriptor */
+                .data = (uint8_t[]) {
+                    0x09,          /*  u8  bLength */
+                    USB_DT_HID,    /*  u8  bDescriptorType */
+                    0x00, 0x01,    /*  u16 HID_class */
+                    0x00,          /*  u8  country_code */
+                    0x01,          /*  u8  num_descriptors */
+                    USB_DT_REPORT, /*  u8  type: Report */
+                    0xb0, 0,       /*  u16 len */
+                },
+            },
+        },
+        .eps = (USBDescEndpoint[]) {
+            {
+                .bEndpointAddress      = USB_DIR_IN | 0x01,
+                .bmAttributes          = USB_ENDPOINT_XFER_INT,
+                .wMaxPacketSize        = 9,
+                .bInterval             = 4,
+            },
+        },
+    },
+    {
+        .bInterfaceNumber              = 1,
+        .bNumEndpoints                 = 1,
+        .bInterfaceClass               = USB_CLASS_HID,
+        .bInterfaceSubClass            = 0,
+        .bInterfaceProtocol            = 0,
+        .ndesc                         = 1,
+        .descs = (USBDescOther[]) {
+            {
+                /* HID descriptor */
+                .data = (uint8_t[]) {
+                    0x09,          /*  u8  bLength */
+                    USB_DT_HID,    /*  u8  bDescriptorType */
+                    0x00, 0x01,    /*  u16 HID_class */
+                    0x00,          /*  u8  country_code */
+                    0x01,          /*  u8  num_descriptors */
+                    USB_DT_REPORT, /*  u8  type: Report */
+                    0x4B, 0,       /*  u16 len */
+                },
+            },
+        },
+        .eps = (USBDescEndpoint[]) {
+            {
+                .bEndpointAddress      = USB_DIR_IN | 0x02,
+                .bmAttributes          = USB_ENDPOINT_XFER_INT,
+                .wMaxPacketSize        = 64,
+                .bInterval             = 4,
+            },
+        },
+    }
+};
+
 static const USBDescDevice desc_device_wacom = {
+    .bcdUSB                        = 0x0100,
+    .bMaxPacketSize0               = 64,
+    .bNumConfigurations            = 1,
+    .confs = (USBDescConfig[]) {
+        {
+            .bNumInterfaces        = 2,
+            .bConfigurationValue   = 1,
+            .bmAttributes          = USB_CFG_ATT_ONE,
+            .bMaxPower             = 49,
+            .nif = 2,
+            .ifs = wacom_ifaces
+        },
+    },
+};
+
+static const USBDescDevice desc_device_wacom2 = {
     .bcdUSB                        = 0x0200,
     .bMaxPacketSize0               = 64,
     .bNumConfigurations            = 1,
@@ -244,68 +324,7 @@ static const USBDescDevice desc_device_wacom = {
             .bmAttributes          = USB_CFG_ATT_ONE,
             .bMaxPower             = 49,
             .nif = 2,
-            .ifs = (USBDescIface[]) {
-                {
-                    .bInterfaceNumber              = 0,
-                    .bNumEndpoints                 = 1,
-                    .bInterfaceClass               = USB_CLASS_HID,
-                    .bInterfaceSubClass            = 0x01, /* boot */
-                    .bInterfaceProtocol            = 0x02, /* mouse */
-                    .ndesc                         = 1,
-                    .descs = (USBDescOther[]) {
-                        {
-                            /* HID descriptor */
-                            .data = (uint8_t[]) {
-                                0x09,          /*  u8  bLength */
-                                USB_DT_HID,    /*  u8  bDescriptorType */
-                                0x00, 0x01,    /*  u16 HID_class */
-                                0x00,          /*  u8  country_code */
-                                0x01,          /*  u8  num_descriptors */
-                                USB_DT_REPORT, /*  u8  type: Report */
-                                0xb0, 0,       /*  u16 len */
-                            },
-                        },
-                    },
-                    .eps = (USBDescEndpoint[]) {
-                        {
-                            .bEndpointAddress      = USB_DIR_IN | 0x01,
-                            .bmAttributes          = USB_ENDPOINT_XFER_INT,
-                            .wMaxPacketSize        = 9,
-                            .bInterval             = 4,
-                        },
-                    },
-                },
-                {
-                    .bInterfaceNumber              = 1,
-                    .bNumEndpoints                 = 1,
-                    .bInterfaceClass               = USB_CLASS_HID,
-                    .bInterfaceSubClass            = 0,
-                    .bInterfaceProtocol            = 0,
-                    .ndesc                         = 1,
-                    .descs = (USBDescOther[]) {
-                        {
-                            /* HID descriptor */
-                            .data = (uint8_t[]) {
-                                0x09,          /*  u8  bLength */
-                                USB_DT_HID,    /*  u8  bDescriptorType */
-                                0x00, 0x01,    /*  u16 HID_class */
-                                0x00,          /*  u8  country_code */
-                                0x01,          /*  u8  num_descriptors */
-                                USB_DT_REPORT, /*  u8  type: Report */
-                                0x4B, 0,       /*  u16 len */
-                            },
-                        },
-                    },
-                    .eps = (USBDescEndpoint[]) {
-                        {
-                            .bEndpointAddress      = USB_DIR_IN | 0x02,
-                            .bmAttributes          = USB_ENDPOINT_XFER_INT,
-                            .wMaxPacketSize        = 64,
-                            .bInterval             = 4,
-                        },
-                    },
-                }
-            }
+            .ifs = wacom_ifaces
         },
     },
 };
@@ -320,6 +339,7 @@ static const USBDesc desc_wacom_default = {
         .iSerialNumber     = 0, // If we provide a serial, driver thinks we are a wireless dongle
     },
     .full = &desc_device_wacom,
+    .high = &desc_device_wacom2,
     .str  = desc_strings,
 };
 
@@ -674,7 +694,6 @@ static void usb_wacom_realize(USBDevice *dev, Error **errp)
     }
     
     usb_desc_init(dev);
-    s->dev.speed = USB_SPEED_FULL;
     s->intr = usb_ep_get(dev, USB_TOKEN_IN, 1);
     s->eh_entry = 0;
     s->pressure = TABLET_CLICK_PRESSURE;
